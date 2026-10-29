@@ -12,6 +12,8 @@ public interface IReservationRepository
 {
     // Gibt false zurück, wenn die Reservierung nicht gespeichert werden konnte.
     bool TrySave(Reservation reservation);
+
+    // Speichert die gesamte Gruppe atomar: entweder alle Reservierungen oder keine.
     bool TrySaveBatch(IReadOnlyList<Reservation> reservations);
 }
 
@@ -38,20 +40,7 @@ public sealed class ReservationService
 
     public bool Reserve(string customerEmail, string eventCode, int seatCount)
     {
-        if (string.IsNullOrWhiteSpace(customerEmail))
-        {
-            throw new ArgumentException("Eine E-Mail-Adresse ist erforderlich.", nameof(customerEmail));
-        }
-
-        if (string.IsNullOrWhiteSpace(eventCode))
-        {
-            throw new ArgumentException("Ein Veranstaltungscode ist erforderlich.", nameof(eventCode));
-        }
-
-        if (seatCount <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(seatCount));
-        }
+        ValidateRequest(customerEmail, eventCode, seatCount);
 
         if (_availability.GetAvailableSeats(eventCode) < seatCount)
         {
@@ -70,38 +59,111 @@ public sealed class ReservationService
 
     public bool ReserveBatch(IReadOnlyList<Reservation> requests)
     {
-        ArgumentNullException.ThrowIfNull(requests);
-        if (requests.Count == 0)
-            throw new ArgumentException("Mindestens eine Reservierung ist erforderlich.", nameof(requests));
+        Reservation[] reservations = ValidateAndCopyBatch(requests);
 
-        // Erst alle Eingaben prüfen, bevor eine Abhängigkeit aufgerufen wird.
-        var reservations = requests.ToArray();
-        foreach (var request in reservations)
+        if (!HasEnoughSeatsForEveryEvent(reservations))
         {
-            if (request is null)
-                throw new ArgumentException("Ein Eintrag darf nicht null sein.", nameof(requests));
-            if (string.IsNullOrWhiteSpace(request.CustomerEmail) ||
-                string.IsNullOrWhiteSpace(request.EventCode))
-                throw new ArgumentException("E-Mail und Veranstaltungscode sind erforderlich.", nameof(requests));
-            if (request.SeatCount <= 0)
-                throw new ArgumentOutOfRangeException(nameof(requests));
-        }
-
-        var totals = reservations.GroupBy(r => r.EventCode)
-            .Select(group => new { EventCode = group.Key, Seats = group.Sum(r => (long)r.SeatCount) });
-        bool enoughSeats = true;
-        foreach (var total in totals)
-        {
-            if (_availability.GetAvailableSeats(total.EventCode) < total.Seats)
-                enoughSeats = false;
-        }
-
-        if (!enoughSeats || !_repository.TrySaveBatch(reservations))
             return false;
+        }
 
-        foreach (var reservation in reservations)
-            _sender.Send(reservation);
+        if (!_repository.TrySaveBatch(reservations))
+        {
+            return false;
+        }
+
+        SendConfirmations(reservations);
         return true;
     }
-}
 
+    private static void ValidateRequest(string customerEmail, string eventCode, int seatCount)
+    {
+        if (string.IsNullOrWhiteSpace(customerEmail))
+        {
+            throw new ArgumentException("Eine E-Mail-Adresse ist erforderlich.", nameof(customerEmail));
+        }
+
+        if (string.IsNullOrWhiteSpace(eventCode))
+        {
+            throw new ArgumentException("Ein Veranstaltungscode ist erforderlich.", nameof(eventCode));
+        }
+
+        if (seatCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(seatCount), "Die Anzahl Plätze muss positiv sein.");
+        }
+    }
+
+    private static Reservation[] ValidateAndCopyBatch(IReadOnlyList<Reservation> requests)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+
+        if (requests.Count == 0)
+        {
+            throw new ArgumentException("Mindestens eine Reservierung ist erforderlich.", nameof(requests));
+        }
+
+        // Die Kopie verhindert, dass der Aufrufer die Gruppe während der Verarbeitung verändert.
+        Reservation[] reservations = requests.ToArray();
+        foreach (Reservation? reservation in reservations)
+        {
+            ValidateBatchReservation(reservation, nameof(requests));
+        }
+
+        return reservations;
+    }
+
+    private static void ValidateBatchReservation(Reservation? reservation, string parameterName)
+    {
+        if (reservation is null)
+        {
+            throw new ArgumentException("Ein Eintrag darf nicht null sein.", parameterName);
+        }
+
+        if (string.IsNullOrWhiteSpace(reservation.CustomerEmail))
+        {
+            throw new ArgumentException("Jede Reservierung benötigt eine E-Mail-Adresse.", parameterName);
+        }
+
+        if (string.IsNullOrWhiteSpace(reservation.EventCode))
+        {
+            throw new ArgumentException("Jede Reservierung benötigt einen Veranstaltungscode.", parameterName);
+        }
+
+        if (reservation.SeatCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                "Die Anzahl Plätze muss in jeder Reservierung positiv sein.");
+        }
+    }
+
+    private bool HasEnoughSeatsForEveryEvent(IEnumerable<Reservation> reservations)
+    {
+        IEnumerable<IGrouping<string, Reservation>> reservationsByEvent = reservations
+            .GroupBy(reservation => reservation.EventCode, StringComparer.Ordinal);
+
+        bool enoughSeatsForEveryEvent = true;
+
+        // Nicht vorzeitig abbrechen: Jede unterschiedliche Veranstaltung wird genau einmal abgefragt.
+        foreach (IGrouping<string, Reservation> eventReservations in reservationsByEvent)
+        {
+            long requestedSeats = eventReservations.Sum(reservation => (long)reservation.SeatCount);
+            int availableSeats = _availability.GetAvailableSeats(eventReservations.Key);
+
+            if (availableSeats < requestedSeats)
+            {
+                enoughSeatsForEveryEvent = false;
+            }
+        }
+
+        return enoughSeatsForEveryEvent;
+    }
+
+    private void SendConfirmations(IEnumerable<Reservation> reservations)
+    {
+        foreach (Reservation reservation in reservations)
+        {
+            _sender.Send(reservation);
+        }
+    }
+}

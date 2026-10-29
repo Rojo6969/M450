@@ -1,71 +1,125 @@
-# 02 – Test Doubles
+# Test Doubles mit xUnit und Moq
 
-Lösung mit xUnit und Moq für alle fünf Grundaufgaben sowie die Gruppenreservierung.
-Quelle: https://github.com/gbssg-russo/m450/blob/main/test-doubles/README.md
+Diese Lösung testet einen Reservierungsservice ohne Datenbank, produktive
+Sitzplatzabfrage oder echten Nachrichtenversand. Dafür kommen ein selbst
+geschriebener Stub, ein selbst geschriebener Spy und Moq zum Einsatz.
 
-## Ausführen
+Umgesetzt sind alle fünf Grundaufgaben sowie die freiwillige
+Fortgeschrittenenaufgabe zur Gruppenreservierung.
 
-Voraussetzung: .NET 10 SDK.
+## Voraussetzungen
 
-```powershell
+- .NET 10 SDK
+- Eine Kommandozeile im Verzeichnis `02-test-doubles`
+
+Die installierte SDK-Version lässt sich so prüfen:
+
+```shell
+dotnet --version
+```
+
+## Tests ausführen
+
+Vom Verzeichnis `02-test-doubles` aus:
+
+```shell
 dotnet test tests/TestDoublesExercise.Tests/TestDoublesExercise.Tests.csproj
 ```
 
-Der vorgegebene Ablauf von Reserve bleibt unverändert. ReserveBatch und TrySaveBatch
-ergänzen die Fortgeschrittenenaufgabe. Alle Doubles liegen ausschliesslich im Testprojekt.
-Es werden keine Datenbank und kein echter Nachrichtenversand verwendet.
+Alternativ aus dem Wurzelverzeichnis dieses Git-Repositories:
 
-## Aufgabe 1 – Nur die Schnittstelle ist bekannt
+```shell
+dotnet test m450-uebeungen-main/02-test-doubles/tests/TestDoublesExercise.Tests/TestDoublesExercise.Tests.csproj
+```
 
-Wir ersetzen ISeatAvailability durch einen eigenen Stub mit festen Werten pro
-Veranstaltungscode. Die Schnittstelle definiert einen Aufruf mit einem string als
-Veranstaltungscode und einem int als Ergebnis; sie garantiert allein weder
-Datenquelle noch Aktualität, Fehlerbehandlung oder die Bedeutung negativer Werte.
-Unsere fachliche Annahme: GetAvailableSeats liefert für den angegebenen Code
-die aktuell frei reservierbare, nicht negative Anzahl an Sitzplätzen.
-Der Stub berechnet keine echte Verfügbarkeit und weist nicht konfigurierte Codes
-durch einen Fehler zurück. So bemerken wir auch versehentlich falsche Codes im Test.
+## Projektstruktur
 
-## Aufgabe 2 – Grenzfälle und Isolation
+```text
+02-test-doubles/
+├── src/TestDoublesExercise/
+│   └── ReservationService.cs
+└── tests/TestDoublesExercise.Tests/
+    ├── ReservationServiceTests.cs
+    ├── ReservationBatchTests.cs
+    └── TestDoubles.cs
+```
 
-Für 0 und -1 erwarten wir ArgumentOutOfRangeException, für einen leeren
-Veranstaltungscode ArgumentException. Aufruflisten in den handgeschriebenen Doubles
-machen sichtbar, dass keine Abhängigkeit angesprochen wurde. Strikte Moq-Mocks
-weisen zusätzlich unerwartete Repository-Aufrufe zurück.
+- `ReservationService.cs` enthält den Service, das Datenmodell und die drei
+  Abhängigkeitsschnittstellen.
+- `TestDoubles.cs` enthält die handgeschriebenen Test Doubles.
+- `ReservationServiceTests.cs` prüft einzelne Reservierungen und ungültige Eingaben.
+- `ReservationBatchTests.cs` prüft die Gruppenreservierung.
 
-## Aufgabe 3 – Stub und Spy
+## Verwendete Test Doubles
 
-Der Stub liefert vorgegebene Verfügbarkeitswerte; der Spy zeichnet die versendeten
-Reservierungen in ihrer Aufrufreihenfolge auf, damit wir sie nachher prüfen können.
+### Stub für die Sitzplatzverfügbarkeit
 
-## Aufgabe 4 – Moq
+`SeatAvailabilityStub` liefert pro Veranstaltungscode einen im Test festgelegten
+Wert. Die Schnittstelle `ISeatAvailability` sagt bereits aus, dass ein
+Veranstaltungscode übergeben und eine ganzzahlige Verfügbarkeit zurückgegeben wird.
 
-Die Tests konfigurieren TrySave mit Setup(...).Returns(true/false), übergeben
-mock.Object und prüfen mit Times.Once() die E-Mail-Adresse, den Veranstaltungscode
-und die Platzanzahl. Bei Platzmangel wird mit Times.Never() geprüft, dass kein
-Speicherversuch stattfindet. Rückgabewert und Bestätigungen werden ebenfalls geprüft.
+Fachliche Annahme: `GetAvailableSeats` liefert die aktuell frei reservierbare,
+nicht negative Anzahl Plätze für den angegebenen Veranstaltungscode. Der Stub
+berechnet keine echte Verfügbarkeit. Ein nicht konfigurierter Code löst bewusst
+einen Fehler aus, damit ein fehlerhafter Testaufbau sichtbar wird.
 
-## Aufgabe 5 – Wahl der Doubles
+### Spy für Bestätigungen
 
-Für die Verfügbarkeit verwende ich den handgeschriebenen Stub, dessen Aufrufliste
-auch die ausbleibende Abfrage zeigt. Das Repository erhält einen strikten Moq-Mock,
-weil sich ein verbotener Speicheraufruf damit direkt prüfen lässt.
-Der handgeschriebene Bestätigungs-Spy macht ausbleibende Nachrichten mit einer
-leeren Liste leicht nachvollziehbar.
+`ConfirmationSenderSpy` zeichnet jede übergebene Reservierung in Aufrufreihenfolge
+auf. So können die Tests nach der Ausführung Anzahl, Inhalt und Reihenfolge der
+Bestätigungen prüfen.
+
+Der Unterschied: Ein Stub liefert vorbereitete Daten an den getesteten Code; ein
+Spy merkt sich Aufrufe, damit die Tests sie anschließend untersuchen können.
+
+### Moq für das Repository
+
+Die Repository-Mocks legen mit `Setup(...).Returns(...)` fest, ob das Speichern
+gelingt. `Verify`, `Times.Once()` und `Times.Never()` prüfen, ob die richtige
+Reservierung gespeichert beziehungsweise ein unerlaubter Speicherversuch
+unterlassen wurde. Strikte Mocks machen zusätzliche, nicht erwartete Aufrufe sofort
+sichtbar.
+
+## Abdeckung der Grundaufgaben
+
+| Aufgabe | Abgedecktes Verhalten |
+| --- | --- |
+| 1 | Mehr, weniger und genau gleich viele verfügbare Plätze; handgeschriebener Stub |
+| 2 | Platzanzahl `0` und `-1`, fehlender Veranstaltungscode, keine Aufrufe bei ungültigen Eingaben |
+| 3 | Bestätigung nach erfolgreichem Speichern, keine Bestätigung bei Platzmangel oder Speicherfehler |
+| 4 | Erfolgreiches und fehlgeschlagenes Speichern mit Moq, genaue Argument- und Aufrufprüfung |
+| 5 | E-Mail-Adresse nur aus Leerzeichen, Exception sowie kein Speichern und kein Versand |
+
+Für Aufgabe 5 wird der handgeschriebene Stub verwendet, weil seine Aufrufliste eine
+unerlaubte Verfügbarkeitsabfrage direkt sichtbar macht. Das Repository ist ein
+strikter Moq-Mock, weil sich ein verbotener Speicherversuch damit präzise prüfen
+lässt. Der handgeschriebene Spy zeigt einen unerlaubten Bestätigungsversand durch
+seine ansonsten leere Liste.
 
 ## Gruppenreservierung
 
-Zuerst werden sämtliche Einträge validiert, danach werden die Plätze je
-Veranstaltungscode addiert und die Verfügbarkeiten genau einmal abgefragt.
-Eine long-Summe verhindert einen int-Überlauf bei sehr grossen Gruppen.
-Das Repository erhält die gesamte Gruppe genau einmal; nur bei Erfolg werden
-Bestätigungen in Eingabereihenfolge versendet. Atomare Speicherung ist laut
-Aufgabenstellung eine Garantie des Repositorys und wird hier als Vertrag angenommen.
+`ReserveBatch` erfüllt folgende Regeln:
 
-Wirft Send nach erfolgreichem Speichern eine Exception, bleiben die Reservierungen
-gespeichert, obwohl keine oder erst einige Bestätigungen versendet wurden.
-Die Exception wird weitergegeben; eine unkontrollierte Wiederholung könnte doppelte
-Reservierungen oder Nachrichten erzeugen. Eine fachliche Lösung ist, die Buchung
-als bestätigt mit noch ausstehendem Versand zu führen und fehlgeschlagene
-Bestätigungen gezielt und ohne Duplikate erneut zu versenden, beispielsweise
-über einen persistenten Versandauftrag (Outbox).
+1. Die vollständige Eingabe wird validiert, bevor eine Abhängigkeit aufgerufen wird.
+2. Platzanfragen werden pro Veranstaltungscode addiert.
+3. Jede unterschiedliche Veranstaltung wird genau einmal abgefragt.
+4. Bei Platzmangel wird weder gespeichert noch eine Bestätigung versendet.
+5. Alle Reservierungen werden gemeinsam und atomar an `TrySaveBatch` übergeben.
+6. Bestätigungen werden erst nach erfolgreichem Speichern in Eingabereihenfolge
+   versendet.
+
+Die Summe wird als `long` berechnet, damit auch mehrere sehr große Platzanfragen
+keinen `int`-Überlauf verursachen. Ein eigener Test prüft zwei Reservierungen für
+dieselbe Veranstaltung, die einzeln passen würden, gemeinsam aber die Kapazität
+überschreiten.
+
+## Fehler beim Bestätigungsversand
+
+Wirft `Send` nach erfolgreichem Speichern eine Exception, bleiben die
+Reservierungen gespeichert, obwohl keine oder nur einige Bestätigungen versendet
+wurden. Eine unkontrollierte Wiederholung könnte doppelte Buchungen oder Nachrichten
+erzeugen.
+
+Eine mögliche fachliche Lösung ist, den Versandstatus getrennt von der Buchung zu
+speichern und fehlgeschlagene Bestätigungen über einen persistenten Versandauftrag
+(Outbox) gezielt und idempotent zu wiederholen.
